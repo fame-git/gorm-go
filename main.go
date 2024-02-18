@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -42,21 +44,81 @@ func main() {
 	}
 
 	db.AutoMigrate(&Book{})
-	fmt.Println("Database migration completed!")
 
-	//deleteBook(db, 1)
+	app := fiber.New()
 
-	/* createBook(db, &Book{
-		Name:        "die",
-		Author:      "die-queen",
-		Price:       400,
-		Description: "Super die",
-	}) */
+	app.Get("/books", func(c *fiber.Ctx) error {
+		return c.JSON(getBooks(db))
+	})
 
-	currentBook := searchBook(db, "die")
+	app.Get("/books/:id", func(c *fiber.Ctx) error {
+		id, err := strconv.Atoi(c.Params("id"))
 
-	for _, book := range currentBook {
-		fmt.Println(book.ID, book.Name, book.Author, book.Price)
-	}
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		book := getBook(db, id)
+		return c.JSON(book)
+	})
 
+	app.Post("/books", func(c *fiber.Ctx) error {
+		book := new(Book)
+
+		if err := c.BodyParser(book); err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+
+		err := createBook(db, book)
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		return c.JSON(fiber.Map{
+			"message": "Create Book Successful",
+		})
+	})
+
+	app.Put("/books/:id", func(c *fiber.Ctx) error {
+		id, err := strconv.Atoi(c.Params("id"))
+
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		book := new(Book)
+
+		if err := c.BodyParser(book); err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+
+		book.ID = uint(id)
+
+		err = updateBook(db, book)
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+		return c.JSON(fiber.Map{
+			"message": "Update Book Successful",
+		})
+
+	})
+
+	app.Delete("/books/:id", func(c *fiber.Ctx) error {
+		id, err := strconv.Atoi(c.Params("id"))
+
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+
+		err = deleteBook(db, id)
+
+		if err != nil {
+			return c.SendStatus(fiber.StatusBadRequest)
+		}
+
+		return c.JSON(fiber.Map{
+			"message": "Delete Book Successful",
+		})
+
+	})
+
+	app.Listen(":8080")
 }
