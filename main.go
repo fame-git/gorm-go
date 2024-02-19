@@ -4,15 +4,41 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v4"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+type Book struct {
+	gorm.Model
+	Name        string `json:"name"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
+	PublisherID uint
+	Publisher   Publisher
+	Authors     []Author `gorm:"many2many:author_books;"`
+}
+
+type Publisher struct {
+	gorm.Model
+	Details string
+	Name    string
+}
+
+type Author struct {
+	gorm.Model
+	Name  string
+	Books []Book `gorm:"many2many:author_books;"`
+}
+
+type AuthorBook struct {
+	AuthorID uint
+	Author   Author
+	BookID   uint
+	Book     Book
+}
 
 const (
 	host     = "localhost"  // or the Docker service name if running in another container
@@ -22,28 +48,13 @@ const (
 	dbname   = "mydatabase" // as defined in docker-compose.yml
 )
 
-// create Middleware
-func authRequired(c *fiber.Ctx) error {
-	cookie := c.Cookies("jwt")
-	jwtSecretKey := "TestSecret"
-	token, err := jwt.ParseWithClaims(cookie, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(jwtSecretKey), nil
-	})
-	if err != nil || !token.Valid {
-		return c.SendStatus(fiber.StatusUnauthorized)
-	}
-	claim := token.Claims.(jwt.MapClaims)
-
-	fmt.Println(claim["user_id"])
-
-	return c.Next()
-}
-
 func main() {
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+	// Configure your PostgreSQL database details here
+	dsn := fmt.Sprintf("host=%s port=%d user=%s "+
+		"password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 
-	// logger for query inspection
+	// New logger for detailed SQL logging
 	newLogger := logger.New(
 		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
 		logger.Config{
@@ -54,134 +65,67 @@ func main() {
 	)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: newLogger,
+		Logger: newLogger, // add Logger
 	})
 
 	if err != nil {
 		panic("failed to connect to database")
 	}
+	// Migrate the schema
+	db.AutoMigrate(&Book{}, &Publisher{}, &Author{}, &AuthorBook{})
+	fmt.Println("Database migration completed!")
 
-	db.AutoMigrate(&Book{}, &User{})
+}
 
-	app := fiber.New()
-	app.Use("/books", authRequired)
+func createPublisher(db *gorm.DB, publisher *Publisher) error {
+	result := db.Create(publisher)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
 
-	app.Get("/books", func(c *fiber.Ctx) error {
-		return c.JSON(getBooks(db))
-	})
+func createAuthor(db *gorm.DB, author *Author) error {
+	result := db.Create(author)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
 
-	app.Get("/books/:id", func(c *fiber.Ctx) error {
-		id, err := strconv.Atoi(c.Params("id"))
+func createBookWithAuthor(db *gorm.DB, book *Book) error {
+	// First, create the book
+	if err := db.Create(book).Error; err != nil {
+		return err
+	}
 
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-		book := getBook(db, id)
-		return c.JSON(book)
-	})
+	return nil
+}
+func getBookWithPublisher(db *gorm.DB, bookID uint) (*Book, error) {
+	var book Book
+	result := db.Preload("Publisher").First(&book, bookID)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &book, nil
+}
 
-	app.Post("/books", func(c *fiber.Ctx) error {
-		book := new(Book)
+func getBookWithAuthors(db *gorm.DB, bookID uint) (*Book, error) {
+	var book Book
+	result := db.Preload("Authors").First(&book, bookID)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &book, nil
+}
 
-		if err := c.BodyParser(book); err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		err := createBook(db, book)
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-		return c.JSON(fiber.Map{
-			"message": "Create Book Successful",
-		})
-	})
-
-	app.Put("/books/:id", func(c *fiber.Ctx) error {
-		id, err := strconv.Atoi(c.Params("id"))
-
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-		book := new(Book)
-
-		if err := c.BodyParser(book); err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		book.ID = uint(id)
-
-		err = updateBook(db, book)
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-		return c.JSON(fiber.Map{
-			"message": "Update Book Successful",
-		})
-
-	})
-
-	app.Delete("/books/:id", func(c *fiber.Ctx) error {
-		id, err := strconv.Atoi(c.Params("id"))
-
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		err = deleteBook(db, id)
-
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		return c.JSON(fiber.Map{
-			"message": "Delete Book Successful",
-		})
-
-	})
-
-	//User register
-	app.Post("/register", func(c *fiber.Ctx) error {
-		user := new(User)
-
-		if err := c.BodyParser(user); err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		err = createUser(db, user)
-
-		if err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		return c.JSON(fiber.Map{
-			"message": "Register Successful",
-		})
-	})
-
-	app.Post("/login", func(c *fiber.Ctx) error {
-		user := new(User)
-
-		if err := c.BodyParser(user); err != nil {
-			return c.SendStatus(fiber.StatusBadRequest)
-		}
-
-		token, err := loginUser(db, user)
-
-		if err != nil {
-			return c.SendStatus(fiber.StatusUnauthorized)
-		}
-
-		c.Cookie(&fiber.Cookie{
-			Name:     "jwt",
-			Value:    token,
-			Expires:  time.Now().Add(time.Hour * 72),
-			HTTPOnly: true,
-		})
-
-		return c.JSON(fiber.Map{
-			"message": "Login Successful",
-		})
-	})
-
-	app.Listen(":8080")
+func listBooksOfAuthor(db *gorm.DB, authorID uint) ([]Book, error) {
+	var books []Book
+	result := db.Joins("JOIN author_books on author_books.book_id = books.id").
+		Where("author_books.author_id = ?", authorID).
+		Find(&books)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return books, nil
 }
